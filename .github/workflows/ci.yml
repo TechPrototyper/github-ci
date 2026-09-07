@@ -39,7 +39,6 @@ permissions:
   issues: write
   pull-requests: write
   security-events: write
-  checks: write
 
 env:
   LANG: ${{ inputs.language }}
