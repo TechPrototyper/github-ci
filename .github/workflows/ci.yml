@@ -119,7 +119,8 @@ jobs:
       - name: semgrep (SAST, OSS default rules, offline)
         run: |
           python3 -m pip install --quiet semgrep
-          semgrep scan --config p/default --json semgrep-report.json
+          # --json is a boolean flag (JSON to stdout); redirect it to a file.
+          semgrep scan --config p/default --json > semgrep-report.json
           python3 - <<'PY'
           import json, sys
           try:
