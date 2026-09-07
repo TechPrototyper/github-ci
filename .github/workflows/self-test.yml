@@ -1,0 +1,17 @@
+# Self-test: run the reusable workflow from this repo itself.
+name: Self-Test
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        description: "python | go | javascript | none"
+        required: false
+        default: "python"
+        type: string
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml@main
+    with:
+      language: ${{ github.event.inputs.language || 'python' }}
+    secrets: inherit

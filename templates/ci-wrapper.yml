@@ -1,0 +1,34 @@
+# Copy this into any repo as .github/workflows/ci.yml and adjust the inputs.
+#
+# language:  python | go | javascript | shell | none
+#   - "shell" and "none" skip lint+tests but still run the security job
+#     (gitleaks + semgrep + dependency audit where applicable).
+#
+# Requires the reusable workflow to exist in TechPrototyper/github-ci.
+# `secrets: inherit` passes through GITHUB_TOKEN (needed for PR comments
+# and issue creation). No other secrets are required.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main   # <-- change to your default branch
+  pull_request:
+  workflow_dispatch:
+    inputs: {}
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  ci:
+    uses: TechPrototyper/github-ci/.github/workflows/ci.yml@main
+    with:
+      language: python          # <-- python | go | javascript | shell | none
+      python-version: "3.11"    # <-- only for python
+      run-lint: true
+      run-tests: true
+      run-security: true
+    secrets: inherit

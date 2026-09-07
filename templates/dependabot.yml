@@ -1,0 +1,19 @@
+# Copy into .github/dependabot.yml of any repo. Adjust the `ecosystem`
+# values to what the repo actually uses:
+#   pip, npm, gomod, maven, gradle, cargo, docker, github-actions
+#
+# github-actions keeps this very file (and any other workflow) up to date.
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

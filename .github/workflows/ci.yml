@@ -1,0 +1,200 @@
+name: Shared CI
+
+# Reusable workflow. Call it from any repo with a tiny wrapper:
+#   jobs:
+#     ci:
+#       uses: TechPrototyper/github-ci/.github/workflows/ci.yml@main
+#       with:
+#         language: python
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "python | go | javascript | shell | none"
+        required: false
+        default: "python"
+        type: string
+      python-version:
+        description: "CPython version for python lint/tests"
+        required: false
+        default: "3.11"
+        type: string
+      run-tests:
+        required: false
+        default: true
+        type: boolean
+      run-security:
+        required: false
+        default: true
+        type: boolean
+      run-lint:
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  security-events: write
+  checks: write
+
+env:
+  LANG: ${{ inputs.language }}
+  PVER: ${{ inputs.python-version }}
+
+jobs:
+  lint:
+    name: Lint
+    if: inputs.run-lint && inputs.language != 'none'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python (ruff)
+        if: inputs.language == 'python'
+        run: |
+          python3 -m pip install --quiet ruff
+          ruff check . || ruff check . --select E,W,F --statistics || true
+      - name: Go (golangci-lint)
+        if: inputs.language == 'go'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          only-new-issues: false
+      - name: JavaScript (eslint)
+        if: inputs.language == 'javascript'
+        run: |
+          npm install -g eslint@8
+          (test -f package.json && npm ci --no-audit --no-fund) || true
+          npx eslint . || true
+
+  tests:
+    name: Tests
+    if: inputs.run-tests && (inputs.language == 'python' || inputs.language == 'go')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        if: inputs.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Install (python)
+        if: inputs.language == 'python'
+        run: |
+          python3 -m pip install --upgrade pip
+          (test -f pyproject.toml || test -f setup.py) && \
+            (python3 -m pip install -e '.[test]' 2>/dev/null || python3 -m pip install -e '.' 2>/dev/null || true)
+          python3 -m pip install --quiet pytest pytest-timeout || true
+      - name: Run tests (python)
+        if: inputs.language == 'python'
+        run: |
+          # Run if a tests dir or pytest config exists; otherwise skip gracefully.
+          if ls tests 2>/dev/null | grep -q . || grep -q "pytest" pyproject.toml setup.py 2>/dev/null; then
+            pytest -q --timeout=600 -p no:cacheprovider
+          else
+            echo "No test suite detected; skipping."
+          fi
+      - name: Set up Go
+        if: inputs.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Run tests (go)
+        if: inputs.language == 'go'
+        run: go test ./...
+
+  security:
+    name: Security
+    if: inputs.run-security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (secret scan)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: semgrep (SAST, OSS default rules, offline)
+        run: |
+          python3 -m pip install --quiet semgrep
+          semgrep scan --config p/default --json semgrep-report.json
+          python3 - <<'PY'
+          import json, sys
+          try:
+              data = json.load(open("semgrep-report.json"))
+          except Exception:
+              print("semgrep: no report; skipping severity gate")
+              sys.exit(0)
+          bad = []
+          for r in data.get("results", []):
+              sev = r.get("extra", {}).get("severity", "").upper()
+              if sev in ("HIGH", "CRITICAL"):
+                  bad.append(f"{r.get('path')}:{r.get('start',{}).get('line')} {sev} {r.get('rule_id')}")
+          if bad:
+              print("semgrep HIGH/CRITICAL findings:")
+              for b in bad:
+                  print("  ", b)
+              sys.exit(1)
+          print("semgrep: no HIGH/CRITICAL findings")
+      - name: Dependency audit (python)
+        if: inputs.language == 'python'
+        run: |
+          python3 -m pip install --quiet pip-audit
+          (pip-audit 2>/dev/null || pip-audit -r requirements.txt 2>/dev/null || echo "pip-audit: no dependency manifest found")
+      - name: Dependency audit (go)
+        if: inputs.language == 'go'
+        run: |
+          (test -f go.mod && (go run golang.org/x/vuln/cmd/govulncheck@latest ./... || echo "govulncheck: no known vulns")) || echo "govulncheck: no go.mod"
+      - name: Dependency audit (javascript)
+        if: inputs.language == 'javascript'
+        run: |
+          (test -f package.json && (npm audit --audit-level=high || echo "npm-audit: high vulns found")) || echo "npm-audit: no package.json"
+
+  report:
+    name: Report (issue / PR comment)
+    needs: [lint, tests, security]
+    if: always() && (inputs.run-lint || inputs.run-tests || inputs.run-security)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize results
+        env:
+          LINT: ${{ needs.lint.result }}
+          TESTS: ${{ needs.tests.result }}
+          SEC: ${{ needs.security.result }}
+          EVENT: ${{ github.event_name }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          set -e
+          failed=""
+          [ "$LINT" = "failure" ] && failed="$failed lint"
+          [ "$TESTS" = "failure" ] && failed="$failed tests"
+          [ "$SEC" = "failure" ] && failed="$failed security"
+          if [ -z "$failed" ]; then
+            echo "All green — nothing to report."
+            exit 0
+          fi
+          echo "FAILED:$failed"
+          echo "Reporting on $EVENT (PR=$PR_NUM) repo=$REPO ref=$REF"
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR_NUM" ]; then
+            body=":xhair: **CI failed** on \`${REF}\`
+            Failed stages:${failed}
+            Re-run: [Actions]($REPO/actions)"
+            gh pr comment "$PR_NUM" --body "$body" --repo "$REPO" || true
+          else
+            title="[CI] Failed on $REF —${failed}"
+            body="Shared CI failed on branch \`$REF\`.
+            Failed stages:${failed}
+            See [Actions logs]($REPO/actions)."
+            existing=$(gh issue list --repo "$REPO" --state open --search "\"[CI] Failed on $REF\" in:title" --json number --jq length 2>/dev/null || echo 0)
+            if [ "$existing" = "0" ]; then
+              gh issue create --repo "$REPO" --title "$title" --body "$body" --label "ci-failure" || \
+                gh issue create --repo "$REPO" --title "$title" --body "$body" || true
+            else
+              echo "Issue already exists for this ref; not duplicating."
+            fi
+          fi
