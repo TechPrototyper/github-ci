@@ -11,7 +11,7 @@ on:
 
 jobs:
   ci:
-    uses: ./.github/workflows/ci.yml@main
+    uses: ./.github/workflows/ci.yml
     with:
       language: ${{ github.event.inputs.language || 'python' }}
     secrets: inherit
